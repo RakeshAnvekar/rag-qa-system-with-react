@@ -13,19 +13,8 @@ Upload documents → extract text → chunk → embed → store → query using 
 
 ## Repository Structure
 
-RAG-QA/
-├─ backend/
-│  ├─ app.py
-│  ├─ data/
-│  │  └─ vectors.json
-│  ├─ error.log
-│  └─ .env
-└─ web/
-   ├─ src/
-   │  ├─ pages/
-   │  │  ├─ AdminPage.tsx
-   │  │  └─ UserChat.tsx
-   └─ package.json
+<img width="403" height="366" alt="image" src="https://github.com/user-attachments/assets/e9c24631-ccbd-4a6d-a1c0-7ff5ddc7765b" />
+
 
 ---
 
@@ -43,15 +32,7 @@ npm install
 
 ## Environment Variables
 
-Backend .env:
-
-OPENAI_API_KEY=your-key
-CHUNK_SIZE=800
-CHUNK_OVERLAP=150
-EMBEDDING_MODEL=text-embedding-3-small
-TOP_K=3
-
-Frontend .env:
+<img width="313" height="136" alt="image" src="https://github.com/user-attachments/assets/0f5f96ef-86af-42f4-a27f-07eb3c00e525" />
 
 REACT_APP_API_BASE=http://localhost:8000
 
