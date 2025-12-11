@@ -24,6 +24,9 @@ Backend:
 
 pip install -r requirements.txt
 
+create .env file and paste Open AI key
+OPENAI_API_KEY="your key"
+
 Frontend:
 
 npm install
