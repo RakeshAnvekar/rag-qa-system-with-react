@@ -22,7 +22,10 @@ Upload documents → extract text → chunk → embed → store → query using 
 
 Backend:
 
-pip install fastapi uvicorn python-dotenv openai python-multipart pdfminer.six python-docx
+pip install -r requirements.txt
+
+create .env file and paste Open AI key
+OPENAI_API_KEY="your key"
 
 Frontend:
 
