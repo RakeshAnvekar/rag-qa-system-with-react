@@ -43,11 +43,13 @@ REACT_APP_API_BASE=http://localhost:8000
 Start backend:
 
 cd backend
+
 uvicorn app:app --reload --port 8000
 
 Start frontend:
 
 cd web
+
 npm start
 
 ---
