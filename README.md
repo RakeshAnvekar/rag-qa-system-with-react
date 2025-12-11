@@ -50,6 +50,8 @@ Start frontend:
 
 cd web
 
+npm install
+
 npm start
 
 ---
