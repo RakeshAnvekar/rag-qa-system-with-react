@@ -22,7 +22,7 @@ Upload documents → extract text → chunk → embed → store → query using 
 
 Backend:
 
-pip install fastapi uvicorn python-dotenv openai python-multipart pdfminer.six python-docx
+pip install -r requirements.txt
 
 Frontend:
 
@@ -49,8 +49,6 @@ uvicorn app:app --reload --port 8000
 Start frontend:
 
 cd web
-
-npm install
 
 npm start
 
