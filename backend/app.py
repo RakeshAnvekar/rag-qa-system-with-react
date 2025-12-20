@@ -1,65 +1,59 @@
 # backend/app.py
-import os # os (Operating System) is a built-in Python module that lets your Python code interact with the computer's file system, folders, environment variables, and operating system features.
+
+import os# os (Operating System) is a built-in Python module that lets your Python code interact with the computer's file system, folders, environment variables, and operating system features.
 import json # json is a Python module used to convert Python data into JSON and JSON into Python data.
 import uuid # uuid is a built-in Python module used to generate universally unique identifiers
 import logging # logging is a built-in Python module that provides a standard way to record:errors,warnings,debug information,important events
 
+import math
 from io import BytesIO
 from threading import Lock # Lock is a thread synchronization tool in Python.It ensures that only one thread at a time can execute a piece of code.
-from typing import List, Any, Dict
+from typing import List, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-
 # third-party libs used for extraction / embeddings
 import openai
 from pdfminer.high_level import extract_text as pdf_extract_text
 import docx  # python-docx
 
-# Load environment
+# -------------------- ENV SETUP --------------------
 load_dotenv()
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 if not OPENAI_API_KEY:
-    # Don't crash at import time; we will raise on use, but log warning
-    print("WARNING: OPENAI_API_KEY not set. Set it in backend/.env")
+    print("WARNING: OPENAI_API_KEY not set")
 
 openai.api_key = OPENAI_API_KEY
 
-# Config
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-#__file__ = full path of the current Python file (app.py)
-# os.path.dirname(__file__) = This gives the folder location of app.py
-#DATA_DIR = "C:\AI Repository\RAG-QA\backend\data"
-
+# -------------------- CONFIG --------------------
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "data")
 DATA_FILE = os.path.join(DATA_DIR, "vectors.json")
+ERROR_LOG = os.path.join(BASE_DIR, "error.log")
 
-#C:\AI Repository\RAG-QA\backend\data\vectors.json
-
-ERROR_LOG = os.path.join(os.path.dirname(__file__), "error.log")
-
-#C:\AI Repository\RAG-QA\backend\error.log
-
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800")) #This is the maximum number of characters in each text chunk
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))#Chunks overlap by 150 characters.
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-TOP_K = int(os.getenv("TOP_K", "1")) #Number of top similar chunks to retrieve during a query.
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
+TOP_K = int(os.getenv("TOP_K", "3"))
 
-# Thread-safety for writes
 _write_lock = Lock()
 
-# Logging
+# -------------------- LOGGING --------------------
 logger = logging.getLogger("rag_backend")
 logger.setLevel(logging.INFO)
+
 handler = logging.FileHandler(ERROR_LOG)
 handler.setLevel(logging.ERROR)
 formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-# FastAPI app
-app = FastAPI(title="Simple Local RAG Backend")#This sets the title of your API documentation.http://localhost:8000/docs
+# -------------------- FASTAPI APP --------------------
+app = FastAPI(title="Local RAG Backend (Human-like Answers)")
 #FastAPI is a Python framework used to create:
 #REST APIs
 #Backend servers
@@ -70,279 +64,189 @@ app = FastAPI(title="Simple Local RAG Backend")#This sets the title of your API 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-# ----------------- Utilities: data file safe handling -----------------
-def ensure_data_file() -> None:
-    """Ensure data directory and JSON file exist and contain a valid JSON list."""
-    try:
-        if not os.path.exists(DATA_DIR):#If the folder backend/data/ does not exist → create it
-            #exist_ok=True prevents errors if folder already exists
-            os.makedirs(DATA_DIR, exist_ok=True)
-        # If file doesn't exist -> create empty list
-        if not os.path.exists(DATA_FILE):
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump([], f)
-            return
-
-        # If file exists but is empty or invalid -> backup & rewrite
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            content = f.read()
-            if not content.strip():
-                raise ValueError("empty file")
-            parsed = json.loads(content)
-            if not isinstance(parsed, list):
-                raise ValueError("file not list")
-    except Exception:
-        try:
-            # attempt to backup original file
-            bak = DATA_FILE + ".bak"
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, "r", encoding="utf-8") as orig, open(bak, "w", encoding="utf-8") as ob:
-                    ob.write(orig.read())
-        except Exception:
-            pass
-        # create fresh empty list
+# -------------------- FILE HANDLING --------------------
+def ensure_data_file():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump([], f)
 
-
-def load_local_vectors() -> List[Dict[str, Any]]:
+#this function loads vectors from the data file and returns them as a list of dictionaries
+def load_vectors() -> List[Dict[str, Any]]:
     ensure_data_file()
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if not isinstance(data, list):
-                return []
-            return data
-    except json.JSONDecodeError:
-        # attempt to recover
-        with _write_lock:
-            with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump([], f)
-        return []
-    except Exception as e:
-        logger.error(f"load_local_vectors error: {e}")
+            return json.load(f)
+    except Exception:
         return []
 
-
-def save_local_vectors(data: List[Dict[str, Any]]) -> None:
-    # atomic write using tmp file and replace
+def save_vectors(data: List[Dict[str, Any]]):
     with _write_lock:
         tmp = DATA_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, indent=2, ensure_ascii=False)
         os.replace(tmp, DATA_FILE)
 
-
-# ----------------- Text extraction -----------------
-def extract_text_from_upload(upload: UploadFile) -> str:
-    """Support .txt, .pdf, .docx. Raise HTTPException on unsupported types."""
-    name = (upload.filename or "").lower()
+# -------------------- TEXT EXTRACTION --------------------
+def extract_text(upload: UploadFile) -> str:
+    name = upload.filename.lower()
     raw = upload.file.read()
     upload.file.seek(0)
+
     if name.endswith(".txt"):
-        try:
-            return raw.decode("utf-8", errors="ignore")
-        except Exception:
-            return raw.decode("latin-1", errors="ignore")
+        return raw.decode("utf-8", errors="ignore")
+
     if name.endswith(".pdf"):
-        try:
-            return pdf_extract_text(BytesIO(raw))
-        except Exception as e:
-            logger.error(f"PDF extract error for {upload.filename}: {e}")
-            raise HTTPException(status_code=400, detail=f"PDF extract failed: {upload.filename}")
+        return pdf_extract_text(BytesIO(raw))
+
     if name.endswith(".docx"):
-        try:
-            doc = docx.Document(BytesIO(raw))
-            return "\n".join([p.text for p in doc.paragraphs])
-        except Exception as e:
-            logger.error(f"DOCX extract error for {upload.filename}: {e}")
-            raise HTTPException(status_code=400, detail=f"DOCX extract failed: {upload.filename}")
-    raise HTTPException(status_code=400, detail=f"Unsupported file type: {upload.filename}")
+        doc = docx.Document(BytesIO(raw))
+        return "\n".join(p.text for p in doc.paragraphs)
 
+    raise HTTPException(status_code=400, detail="Unsupported file type")
 
-# ----------------- Chunking -----------------
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
-    if chunk_size <= overlap:
-        raise ValueError("chunk_size must be greater than overlap")
-    text = text.strip()
-    if not text:
-        return []
-    chunks: List[str] = []
+# -------------------- CHUNKING --------------------
+def chunk_text(text: str) -> List[str]:
+    chunks = []
     start = 0
-    n = len(text)
-    while start < n:
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk.strip())
-        start = end - overlap
+    text = text.strip()
+
+    while start < len(text):
+        end = start + CHUNK_SIZE
+        chunks.append(text[start:end].strip())
+        start = end - CHUNK_OVERLAP
+
     return [c for c in chunks if c]
 
-
-# ----------------- Embeddings -----------------
+# -------------------- EMBEDDINGS --------------------
+#this function gets embeddings from openai for a list of texts and returns a list of embeddings
+#for example if input is ["text1", "text2"], output will be [[emb1], [emb2]]
 def get_embeddings(texts: List[str]) -> List[List[float]]:
-    """Call OpenAI Embeddings API. Raises exception if API key missing."""
-    if not openai.api_key:
-        raise RuntimeError("OPENAI_API_KEY not configured. Set it in backend/.env")
-    # OpenAI supports batching by passing list of inputs
-    resp = openai.Embedding.create(input=texts, model=EMBEDDING_MODEL)
-    embeddings = [d["embedding"] for d in resp["data"]]
-    return embeddings
+    response = openai.Embedding.create(
+        model=EMBEDDING_MODEL,
+        input=texts
+    )
+    return [d["embedding"] for d in response["data"]] #return list of embeddings
 
-
-# ----------------- Similarity utilities -----------------
-def dot(a: List[float], b: List[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))
-
-
-def norm(a: List[float]) -> float:
-    import math
-    return math.sqrt(sum(x * x for x in a))
-
-
+# -------------------- SIMILARITY --------------------
+#this function calculates cosine similarity between two vectors a and b
 def cosine_similarity(a: List[float], b: List[float]) -> float:
-    na = norm(a)
-    nb = norm(b)
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot(a, b) / (na * nb)
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
 
+# -------------------- ANSWER GENERATION --------------------
+def generate_answer(question: str, context_chunks: List[str]) -> str:
+    context = "\n\n".join(context_chunks)
 
-# ----------------- Endpoints -----------------
+    prompt = f"""
+You are a helpful assistant.
+Answer the question ONLY using the context below.
+If the answer is not present, say:
+"I don't know based on the provided documents."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+    response = openai.ChatCompletion.create(
+        model=CHAT_MODEL,
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": "Answer like a knowledgeable human expert."},
+            {"role": "user", "content": prompt}
+        ]
+    )
+
+    return response["choices"][0]["message"]["content"].strip()
+
+# -------------------- API ENDPOINTS --------------------
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-
 @app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    # log full traceback for server-side debugging
+async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error")
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-
+# ---------- ADMIN: UPLOAD ----------
 @app.post("/api/admin/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
-    """
-    Upload multiple files as 'files' form fields.
-    Example form keys:
-      files: <file1>
-      files: <file2>
-    Returns number of added chunks.
-    """
-    total_added = 0
-    try:
-        if not files:
-            return {"status": "error", "detail": "No files provided."}
+    vectors = load_vectors()
+    added = 0
 
-        # load current vectors
-        all_vectors = load_local_vectors()
-
-        for upload in files:
-            try:
-                text = extract_text_from_upload(upload)
-            except HTTPException as he:
-                # skip unsupported/broken file but continue other files
-                logger.error(f"Skipping file {upload.filename}: {he.detail}")
-                continue
-
+    for file in files:
+        try:
+            text = extract_text(file)
             chunks = chunk_text(text)
-            if not chunks:
-                continue
+            embeddings = get_embeddings(chunks)
 
-            # get embeddings in batches (OpenAI can handle multiple inputs)
-            try:
-                embeddings = get_embeddings(chunks)
-            except Exception as e:
-                logger.exception("Embedding generation failed")
-                raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
-
-            # upsert chunk items to local list
             for idx, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-                item = {
+                vectors.append({
                     "id": str(uuid.uuid4()),
-                    "filename": upload.filename,
+                    "filename": file.filename,
                     "chunk_index": idx,
                     "text": chunk,
-                    "embedding": emb,
-                }
-                all_vectors.append(item)
-                total_added += 1
+                    "embedding": emb
+                })
+                added += 1
 
-        # persist to disk
-        save_local_vectors(all_vectors)
-        return {"status": "ok", "added_chunks": total_added}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Upload failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        except Exception as e:
+            logger.error(f"Upload failed for {file.filename}: {e}")
 
+    save_vectors(vectors)
+    return {"status": "ok", "added_chunks": added}
 
+# ---------- USER: QUERY ----------
 @app.post("/api/user/query")
 async def query(payload: Dict[str, Any]):
-    """
-    Body: { "q": "<question text>", "k": optional int }
-    Returns: best-matching chunks and an aggregated 'answer' (concatenation).
-    """
-    try:
-        q = payload.get("q") if isinstance(payload, dict) else None
-        if not q or not isinstance(q, str):
-            raise HTTPException(status_code=400, detail="Missing 'q' in request body")
+    # the payload is expected to be in the form:
+    #{
+        #"q": "How many sick leaves does SR Solutions have?"
+    #}
+    question = payload.get("q") # here q is question
+    k = int(payload.get("k", TOP_K)) # number of top documents to consider
 
-        k = int(payload.get("k", TOP_K)) if isinstance(payload, dict) else TOP_K
-        if k <= 0:
-            k = TOP_K
+    if not question:#handle th e case when question is missing
+        raise HTTPException(status_code=400, detail="Question missing")#raise an error if question is missing
 
-        # embed the question
-        try:
-            q_emb = get_embeddings([q])[0]
-        except Exception as e:
-            logger.exception("Failed to embed query")
-            raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
+    q_embedding = get_embeddings([question])[0]
+    data = load_vectors() #load all vectors from the data file
 
-        # load vectors
-        data = load_local_vectors()
-        if not data:
-            return {"answer": "", "sources": []}
+    if not data:
+        return {"answer": "No documents available.", "sources": []}
 
-        # compute similarity scores
-        scored = []
-        for item in data:
-            emb = item.get("embedding")
-            if not emb:
-                continue
-            try:
-                score = cosine_similarity(q_emb, emb)
-            except Exception:
-                score = 0.0
-            scored.append((score, item))
+    scored = []
+    for item in data:
+        score = cosine_similarity(q_embedding, item["embedding"])
+        scored.append((score, item))
 
-        # sort and take top k
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:k]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_items = scored[:k]
 
-        # build answer by concatenating top chunks (simple)
-        answer = "\n\n---\n".join([it["text"] for _, it in top])
+    context_chunks = [item["text"] for _, item in top_items]
+    answer = generate_answer(question, context_chunks)
 
-        sources = [
-            {
-                "filename": it.get("filename"),
-                "chunk_index": it.get("chunk_index"),
-                "score": float(score),
-                "text": it.get("text")[:400],
-            }
-            for score, it in top
-        ]
+    sources = [
+        {
+            "filename": item["filename"],
+            "chunk_index": item["chunk_index"],
+            "score": round(score, 4)
+        }
+        for score, item in top_items
+    ]
 
-        return {"answer": answer, "sources": sources}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Query failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+    return {
+        "answer": answer,
+    }
